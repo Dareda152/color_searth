@@ -101,6 +101,12 @@ io.on('connection', (socket) => {
     const { room, playerId } = actor(socket);
     store.submitGuess(room, playerId, value);
   }));
+  socket.on('draft_guess', (value: unknown) => {
+    try {
+      const { room, playerId } = actor(socket);
+      store.updateDraft(room, playerId, value);
+    } catch { /* A late or invalid draft never interrupts the round. */ }
+  });
   socket.on('skip', (ack?: Ack) => run(ack, () => {
     const { room, playerId } = actor(socket);
     store.skipDisconnectedDescriber(room, playerId);

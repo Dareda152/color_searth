@@ -27,6 +27,7 @@ export interface GuessResult {
   color: RGB | null;
   distance: number | null;
   points: number;
+  autoSubmitted: boolean;
 }
 
 export interface FinishedGame {
@@ -50,6 +51,8 @@ export interface RoomView {
   target: RGB | null;
   clue: string | null;
   deadline: number | null;
+  phaseStartedAt: number;
+  selfDraft: RGB | null;
   results: GuessResult[] | null;
   describerPoints: number | null;
   skipped: boolean;

@@ -68,7 +68,7 @@ test('room runs all starting players once, includes late guesses, hides target a
   }
 });
 
-test('an expired round gives zero to players who did not answer', () => {
+test('an expired round scores the last selected color even without confirmation', () => {
   const dir = mkdtempSync(join(tmpdir(), 'color-searth-timeout-'));
   try {
     const store = new GameStore(join(dir, 'rooms.json'));
@@ -78,12 +78,21 @@ test('an expired round gives zero to players who did not answer', () => {
     store.updateSettings(room, host.id, { timerSeconds: 30, grayPercent: 10, strictness: 3 });
     store.start(room, host.id);
     store.submitClue(room, room.roster[0], 'Цвет осеннего утра');
-    room.deadline = Date.now() - 1;
     const firstGuesser = [...room.eligible][0];
+    const lastColor: RGB = [19, 87, 173];
+    store.updateDraft(room, firstGuesser, [1, 2, 3]);
+    store.updateDraft(room, firstGuesser, lastColor);
+    assert.deepEqual(store.view(room, firstGuesser).selfDraft, lastColor);
+    assert.equal(store.view(room, room.roster[0]).selfDraft, null);
+    assert.ok(store.view(room, firstGuesser).players.every((player) => !player.hasGuessed));
+    room.deadline = Date.now() - 1;
     assert.throws(() => store.submitGuess(room, firstGuesser, [1, 2, 3]), /Время вышло/);
     assert.equal(room.phase, 'reveal');
-    assert.ok(room.results?.every((result) => result.points === 0 && result.color === null));
-    assert.equal(room.describerPoints, 0);
+    const result = room.results?.find((entry) => entry.playerId === firstGuesser);
+    assert.deepEqual(result?.color, lastColor);
+    assert.equal(result?.points, scoreGuess(room.target!, lastColor, 3));
+    assert.equal(result?.autoSubmitted, true);
+    assert.ok(room.results?.every((entry) => entry.color !== null && entry.points > 0));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

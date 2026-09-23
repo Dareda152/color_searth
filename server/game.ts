@@ -1,7 +1,7 @@
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { oklabDistance, randomTarget, scoreGuess, type RGB } from '../shared/color.ts';
+import { oklabDistance, randomTarget, scoreGuess, wheelToRgb, type RGB } from '../shared/color.ts';
 import { AVATARS, type FinishedGame, type GuessResult, type Phase, type RoomSettings, type RoomView } from '../shared/types.ts';
 
 interface Player {
@@ -27,12 +27,14 @@ interface Room {
   target: RGB | null;
   clue: string | null;
   guesses: Map<string, RGB>;
+  drafts: Map<string, RGB>;
   eligible: Set<string>;
   deadline: number | null;
   timer: NodeJS.Timeout | null;
   results: GuessResult[] | null;
   describerPoints: number | null;
   skipped: boolean;
+  phaseStartedAt: number;
   history: FinishedGame[];
 }
 
@@ -43,6 +45,7 @@ interface SavedRoom {
 }
 
 const DEFAULT_SETTINGS: RoomSettings = { timerSeconds: 90, grayPercent: 10, strictness: 3 };
+const DEFAULT_GUESS = wheelToRgb(0.68, 0.25, 0.7);
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const BLOCKED_CODE = /(?:#[0-9a-f]{3,8}\b|0x[0-9a-f]{6,8}\b|\b(?:rgb|rgba|hsl|hsla|oklab|oklch)\s*\()/i;
 
@@ -60,8 +63,8 @@ export class GameStore {
   private emptyRoom(code: string, settings = DEFAULT_SETTINGS, history: FinishedGame[] = []): Room {
     return {
       code, hostId: null, players: new Map(), settings, phase: 'lobby', roster: [], participants: new Set(),
-      roundIndex: 0, target: null, clue: null, guesses: new Map(), eligible: new Set(), deadline: null,
-      timer: null, results: null, describerPoints: null, skipped: false, history,
+      roundIndex: 0, target: null, clue: null, guesses: new Map(), drafts: new Map(), eligible: new Set(), deadline: null,
+      timer: null, results: null, describerPoints: null, skipped: false, phaseStartedAt: Date.now(), history,
     };
   }
 
@@ -96,7 +99,10 @@ export class GameStore {
     const player = this.addPlayer(room, nickname, avatar, socketId);
     if (!room.hostId || !room.players.get(room.hostId)?.connected) room.hostId = player.id;
     if (room.phase !== 'lobby') room.participants.add(player.id);
-    if (room.phase === 'guess') room.eligible.add(player.id);
+    if (room.phase === 'guess') {
+      room.eligible.add(player.id);
+      room.drafts.set(player.id, DEFAULT_GUESS);
+    }
     this.emit(room);
     return { room, player };
   }
@@ -176,9 +182,11 @@ export class GameStore {
 
   private beginRound(room: Room): void {
     room.phase = 'clue';
+    room.phaseStartedAt = Date.now();
     room.target = randomTarget(room.settings.grayPercent);
     room.clue = null;
     room.guesses = new Map();
+    room.drafts = new Map();
     room.eligible = new Set();
     room.deadline = null;
     room.results = null;
@@ -194,7 +202,9 @@ export class GameStore {
     if (BLOCKED_CODE.test(clue)) throw new Error('Цветовые коды в подсказке запрещены.');
     room.clue = clue;
     room.phase = 'guess';
+    room.phaseStartedAt = Date.now();
     room.eligible = new Set([...room.players.values()].filter((player) => player.connected && player.id !== actorId).map((player) => player.id));
+    for (const id of room.eligible) room.drafts.set(id, DEFAULT_GUESS);
     room.deadline = Date.now() + room.settings.timerSeconds * 1000;
     room.timer = setTimeout(() => this.reveal(room), room.settings.timerSeconds * 1000);
     this.emit(room);
@@ -206,12 +216,22 @@ export class GameStore {
       this.reveal(room);
       throw new Error('Время вышло.');
     }
+    room.guesses.set(actorId, this.validateColor(value));
+    this.emit(room);
+    if ([...room.eligible].every((id) => room.guesses.has(id))) this.reveal(room);
+  }
+
+  updateDraft(room: Room, actorId: string, value: unknown): void {
+    if (room.phase !== 'guess' || !room.eligible.has(actorId) || room.guesses.has(actorId)) return;
+    if (room.deadline === null || Date.now() >= room.deadline) return;
+    room.drafts.set(actorId, this.validateColor(value));
+  }
+
+  private validateColor(value: unknown): RGB {
     if (!Array.isArray(value) || value.length !== 3 || !value.every((x) => Number.isInteger(x) && x >= 0 && x <= 255)) {
       throw new Error('Неверный цвет.');
     }
-    room.guesses.set(actorId, value as RGB);
-    this.emit(room);
-    if ([...room.eligible].every((id) => room.guesses.has(id))) this.reveal(room);
+    return value as RGB;
   }
 
   private reveal(room: Room): void {
@@ -219,15 +239,17 @@ export class GameStore {
     if (room.timer) clearTimeout(room.timer);
     room.timer = null;
     room.phase = 'reveal';
+    room.phaseStartedAt = Date.now();
     room.deadline = null;
     const results: GuessResult[] = [];
     for (const playerId of room.eligible) {
       const player = room.players.get(playerId)!;
-      const color = room.guesses.get(playerId) ?? null;
+      const color = room.guesses.get(playerId) ?? room.drafts.get(playerId) ?? null;
       const points = color ? scoreGuess(room.target, color, room.settings.strictness) : 0;
       player.score += points;
       results.push({ playerId, nickname: player.nickname, avatar: player.avatar, color,
-        distance: color ? oklabDistance(room.target, color) : null, points });
+        distance: color ? oklabDistance(room.target, color) : null, points,
+        autoSubmitted: !room.guesses.has(playerId) });
     }
     results.sort((a, b) => b.points - a.points);
     room.results = results;
@@ -243,6 +265,7 @@ export class GameStore {
     if (room.phase !== 'clue' || describer?.connected) throw new Error('Пропустить можно только ход отключившегося ведущего.');
     room.skipped = true;
     room.phase = 'reveal';
+    room.phaseStartedAt = Date.now();
     room.results = [];
     room.describerPoints = 0;
     room.target = null;
@@ -258,6 +281,7 @@ export class GameStore {
       return;
     }
     room.phase = 'finished';
+    room.phaseStartedAt = Date.now();
     const leaderboard = [...room.participants].map((id) => room.players.get(id)!).filter(Boolean)
       .sort((a, b) => b.score - a.score || a.joinedAt - b.joinedAt)
       .map(({ nickname, avatar, score }) => ({ nickname, avatar, score }));
@@ -272,6 +296,7 @@ export class GameStore {
     this.requireHost(room, actorId);
     if (room.phase !== 'finished') throw new Error('Текущая партия ещё идёт.');
     room.phase = 'lobby';
+    room.phaseStartedAt = Date.now();
     room.roster = [];
     room.participants = new Set();
     room.roundIndex = 0;
@@ -298,6 +323,8 @@ export class GameStore {
       totalRounds: room.roster.length, describerId,
       target: revealed || (room.phase !== 'lobby' && describerId === selfId) ? room.target : null,
       clue: room.clue, deadline: room.deadline,
+      phaseStartedAt: room.phaseStartedAt,
+      selfDraft: room.phase === 'guess' ? room.drafts.get(selfId) ?? null : null,
       results: revealed ? room.results : null, describerPoints: revealed ? room.describerPoints : null,
       skipped: room.skipped, history: room.history,
     };
