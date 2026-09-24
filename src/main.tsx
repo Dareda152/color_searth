@@ -7,11 +7,12 @@ import { ResultsScene, revealDuration } from './ResultsScene.tsx';
 import { LobbyPanel } from './LobbyPanel.tsx';
 import { DescriberAward } from './DescriberAward.tsx';
 import './styles.css';
+import './refresh.css';
 
 const socket = io({ autoConnect: false, reconnection: true });
 type Ack = { ok: true; code?: string; token?: string } | { ok: false; error: string };
 const roomCodeFromPath = () => /^\/room\/([A-Z2-9]{8})\/?$/i.exec(window.location.pathname)?.[1]?.toUpperCase() ?? '';
-const initialPicker = { L: 0.68, hue: 0.25, radius: 0.7 };
+const initialPicker = { L: 0.72, hue: 0.9, radius: 0.78 };
 function pickerFromRgb(color: RGB) {
   const [L, a, b] = rgbToOklab(color);
   const hue = (Math.atan2(b, a) + 2 * Math.PI) % (2 * Math.PI);
@@ -149,6 +150,12 @@ function App() {
   const isHost = !!self?.isHost;
   const secondsLeft = view?.deadline ? Math.max(0, Math.ceil((view.deadline - now) / 1000)) : 0;
   const selectedRgb = useMemo(() => wheelToRgb(picker.L, picker.hue, picker.radius), [picker]);
+  const accentRgb = useMemo(() => wheelToRgb(Math.max(0.7, picker.L), picker.hue, Math.max(0.55, picker.radius)), [picker]);
+  const accentStyle = {
+    '--accent': rgbCss(selectedRgb),
+    '--accent-ink': rgbCss(accentRgb),
+    '--accent-rgb': selectedRgb.join(' '),
+  } as React.CSSProperties;
   const selectColor = (next: typeof picker) => {
     setPicker(next);
     socket.emit('draft_guess', wheelToRgb(next.L, next.hue, next.radius));
@@ -168,11 +175,11 @@ function App() {
     catch { setError('Не удалось скопировать ссылку. Код комнаты можно отправить вручную.'); }
   };
 
-  return <div className="site-shell">
-    <header className="topbar"><div className="brand"><span className="brand-mark" />ЦВЕТОСФЕРА</div><span className="topbar-note">Слова. Оттенки. Точность.</span><span className={`connection ${connected ? 'online' : ''}`}>{connected ? 'На связи' : 'Нет связи'}</span></header>
+  return <div className="site-shell" style={accentStyle}>
+    <header className="topbar"><div className="brand"><span className="brand-mark" />ЦВЕТОСФЕРА<span className="brand-index">/ COLOR SYSTEM 01</span></div><span className="topbar-note">СЛОВА / ОТТЕНКИ / ТОЧНОСТЬ</span><span className={`connection ${connected ? 'online' : ''}`}>{connected ? '● В СЕТИ' : '○ НЕТ СВЯЗИ'}</span></header>
     {!view ? <main className="welcome layout">
-      <section className="welcome-copy"><div className="eyebrow">ИГРА НА ЦВЕТОВОЕ ЧУТЬЁ</div><h1>Один цвет.<br /><em>Тысяча слов.</em></h1><p>Опиши оттенок, который видишь только ты. Остальные найдут его на цветовом круге. Чем ближе ответ в Oklab, тем больше очков.</p><div className="feature-row"><span>◉ До 5000 очков</span><span>◷ Раунды на время</span><span>✧ Без регистрации</span></div></section>
-      <section className="entry-card panel"><div className="entry-orb" /><h2>Присоединиться к игре</h2><p>Выберите имя и аватар. Для новой комнаты код не нужен.</p><label>Ваш никнейм<input maxLength={20} value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="Как вас зовут?" /></label><div className="field-label">Аватар</div><div className="avatar-grid">{AVATARS.map((item) => <button key={item} className={avatar === item ? 'avatar selected' : 'avatar'} onClick={() => setAvatar(item)} aria-label={`Аватар ${item}`}>{item}</button>)}</div><label>Код комнаты<input maxLength={8} value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} placeholder="Например, K7MN2PQR" /></label><div className="entry-actions"><button className="button primary" disabled={!connected || busy} onClick={() => enter(false)}>Войти по коду</button><button className="button secondary" disabled={!connected || busy} onClick={() => enter(true)}>Создать комнату</button></div>{error && <div className="error">{error}</div>}</section>
+      <section className="welcome-copy"><div className="eyebrow">ИНТЕРАКТИВНЫЙ ЦВЕТОВОЙ ЭКСПЕРИМЕНТ / 001</div><div className="hero-orbit"><div className="hero-cross hero-cross-x" /><div className="hero-cross hero-cross-y" /><div className="hero-core"><span>COLOR / PERCEPTION</span><h1>Один цвет.<br /><em>Тысяча слов.</em></h1><p>Опиши оттенок. Найди его по чужой подсказке. Попади как можно ближе.</p></div><span className="orbit-point orbit-point-a" /><span className="orbit-point orbit-point-b" /></div><div className="feature-row"><span>01 / ОПИСЫВАЙ</span><span>02 / ВЫБИРАЙ</span><span>03 / СРАВНИВАЙ</span></div></section>
+      <section className="entry-card panel"><div className="entry-heading"><span>ПОДКЛЮЧЕНИЕ / 01</span><span>↗</span></div><h2>Начать игру</h2><p>Создай комнату или присоединись по коду.</p><label>ИМЯ ИГРОКА<input maxLength={20} value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="Ваше имя" /></label><div className="field-label">АВАТАР</div><div className="avatar-grid">{AVATARS.map((item) => <button key={item} className={avatar === item ? 'avatar selected' : 'avatar'} onClick={() => setAvatar(item)} aria-label={`Аватар ${item}`}>{item}</button>)}</div><label>КОД КОМНАТЫ <small>ДЛЯ ВХОДА</small><input maxLength={8} value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} placeholder="XXXXXXXX" /></label><div className="entry-actions"><button className="button primary" disabled={!connected || busy} onClick={() => enter(false)}>Войти по коду ↗</button><button className="button secondary" disabled={!connected || busy} onClick={() => enter(true)}>Создать комнату +</button></div>{error && <div className="error">{error}</div>}</section>
     </main> : <main className="layout game-layout">
       <section className="game-main">
         <div className="room-heading"><div><div className="eyebrow">КОМНАТА {view.code}</div><h1>{view.phase === 'lobby' ? 'Собираем компанию' : view.phase === 'finished' ? (duel ? 'Дуэль завершена' : 'Партия завершена') : `${duel ? 'Дуэль' : 'Раунд'} ${view.roundNumber} / ${view.totalRounds}`}</h1></div><button className="button ghost invite" onClick={copyInvite}>↗ Скопировать приглашение</button></div>
@@ -185,9 +192,9 @@ function App() {
         {error && <div className="error global-error">{error}</div>}
         <section className="history-section"><button className="history-toggle" onClick={() => setHistoryOpen(!historyOpen)}>История партий <span>{historyOpen ? '−' : '+'}</span></button>{historyOpen && (view.history.length ? <div className="history-list">{view.history.map((game) => <div className="history-game" key={game.id}><strong>{game.winners.join(' и ')}</strong><small>{new Date(game.finishedAt).toLocaleString('ru-RU')}</small><span>{game.leaderboard.map((player) => `${player.nickname} ${player.score}`).join(' · ')}</span></div>)}</div> : <p className="muted">Пока нет завершённых партий.</p>)}</section>
       </section>
-      <aside className="sidebar"><div className="panel players-panel"><div className="sidebar-title"><h3>Игроки</h3><span>{view.players.filter((player) => player.connected).length} онлайн</span></div><div className="player-list">{view.players.map((player) => { const showScore = view.phase !== 'reveal' || sceneDone || view.skipped; const finalRank = finalBoard.findIndex((entry) => entry.nickname === player.nickname); const finalVisible = view.phase !== 'finished' || finalRank < 0 || finalBoard.length - finalRank <= finalShown; return <div className={`player-row ${player.id === view.selfId ? 'you' : ''} ${view.phase === 'guess' && player.hasGuessed ? 'answered' : ''}`} key={player.id}><span className="player-avatar">{player.avatar}</span><span className="player-info"><strong>{player.nickname}{player.id === view.selfId ? ' · вы' : ''}</strong><small>{!player.connected ? 'Не в сети' : view.phase === 'guess' && player.hasGuessed ? 'Ответ зафиксирован' : duel && !player.inCurrentGame && view.phase !== 'lobby' ? 'Зритель' : player.isDescriber && view.phase !== 'lobby' ? 'Ведущий' : player.isHost ? 'Хозяин' : 'В игре'}</small></span>{view.phase === 'guess' && player.hasGuessed ? <span className="answered-check">✓</span> : null}<span className="player-score">{showScore && finalVisible ? player.score.toLocaleString('ru-RU') : '•••'}</span></div>; })}</div></div><div className="rules-card"><h3>Как играть</h3>{duel ? <><p>Пять готовых подсказок из банка цветов. Оба игрока угадывают один и тот же цвет одновременно.</p><p>Каждый получает до 5000 очков за точность в Oklab. Побеждает сумма за пять раундов.</p><p>Присоединившиеся во время партии наблюдают и смогут играть в следующей дуэли.</p></> : <><p>Каждый игрок из стартового состава один раз описывает случайный цвет. Остальные угадывают на круге.</p><p>Новый игрок может сразу угадывать и набрать очки, но описывает цвет только в следующей партии.</p><p>Очки зависят от расстояния в Oklab. Ведущий получает средний балл угадывающих.</p></>}</div></aside>
+      <aside className="sidebar"><div className="panel players-panel"><div className="sidebar-title"><h3>ИГРОКИ</h3><span>{view.players.filter((player) => player.connected).length} В СЕТИ</span></div><div className="player-list">{view.players.map((player) => { const showScore = view.phase !== 'reveal' || sceneDone || view.skipped; const finalRank = finalBoard.findIndex((entry) => entry.nickname === player.nickname); const finalVisible = view.phase !== 'finished' || finalRank < 0 || finalBoard.length - finalRank <= finalShown; return <div className={`player-row ${player.id === view.selfId ? 'you' : ''} ${view.phase === 'guess' && player.hasGuessed ? 'answered' : ''}`} key={player.id}><span className="player-avatar">{player.avatar}</span><span className="player-info"><strong>{player.nickname}{player.id === view.selfId ? ' · вы' : ''}</strong><small>{!player.connected ? 'Не в сети' : view.phase === 'guess' && player.hasGuessed ? 'Ответ зафиксирован' : duel && !player.inCurrentGame && view.phase !== 'lobby' ? 'Зритель' : player.isDescriber && view.phase !== 'lobby' ? 'Ведущий' : player.isHost ? 'Хозяин' : 'В игре'}</small></span>{view.phase === 'guess' && player.hasGuessed ? <span className="answered-check">✓</span> : null}<span className="player-score">{showScore && finalVisible ? player.score.toLocaleString('ru-RU') : '•••'}</span></div>; })}</div></div></aside>
     </main>}
-    <footer>ЦВЕТОСФЕРА <span>Цвета становятся ближе, когда о них говорят.</span></footer>
+    <footer><span>ЦВЕТОСФЕРА / 2026</span><span>ЦВЕТА СТАНОВЯТСЯ БЛИЖЕ, КОГДА О НИХ ГОВОРЯТ</span><span>OKLAB / RGB</span></footer>
   </div>;
 }
 

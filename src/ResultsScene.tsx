@@ -129,7 +129,7 @@ export function ResultsScene({ target, results, startedAt, replayAt }: {
     };
 
     const wash = ctx.createRadialGradient(width * .5, height * .5, 10, width * .5, height * .5, width * .65);
-    wash.addColorStop(0, '#191c2d'); wash.addColorStop(1, '#0b0d16');
+    wash.addColorStop(0, '#2b2b28'); wash.addColorStop(1, '#202020');
     ctx.fillStyle = wash; ctx.fillRect(0, 0, width, height);
 
     const dots = particles.map((particle) => ({ ...particle, at: project(point(particle.lab)) })).sort((a, b) => b.at.depth - a.at.depth);
@@ -149,11 +149,11 @@ export function ResultsScene({ target, results, startedAt, replayAt }: {
       ctx.fillStyle = major ? 'rgba(255,255,255,.12)' : 'rgba(255,255,255,.09)'; ctx.fill();
       ctx.beginPath(); ctx.arc(at.x, at.y, radius, 0, 2 * Math.PI);
       ctx.fillStyle = rgbCss(color); ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = '#fff'; ctx.stroke();
-      ctx.font = '700 12px Manrope, sans-serif';
+      ctx.font = '12px "Departure Mono", monospace';
       const textWidth = ctx.measureText(label).width;
       const lx = Math.min(width - textWidth - 19, Math.max(15, at.x + 16));
       const ly = Math.max(22, Math.min(height - 15, at.y - 20));
-      ctx.fillStyle = 'rgba(9,10,18,.82)'; ctx.beginPath(); ctx.roundRect(lx - 8, ly - 16, textWidth + 16, 24, 7); ctx.fill();
+      ctx.fillStyle = 'rgba(32,32,32,.92)'; ctx.beginPath(); ctx.roundRect(lx - 8, ly - 16, textWidth + 16, 24, 0); ctx.fill();
       ctx.fillStyle = '#fff'; ctx.fillText(label, lx, ly);
       ctx.globalAlpha = 1;
     };
@@ -173,7 +173,7 @@ export function ResultsScene({ target, results, startedAt, replayAt }: {
       }
       drawMarker(targetAt, target, 'ЗАГАДАННЫЙ', true);
     }
-    ctx.fillStyle = '#b7bfd3'; ctx.font = '600 11px Manrope, sans-serif';
+    ctx.fillStyle = '#a8a89f'; ctx.font = '11px "Departure Mono", monospace';
     ctx.fillText('Oklab · L ↑   a ↗   b ↘', 18, height - 19);
   }, [target, ordered, elapsed, step.kind, step.index, step.progress, current]);
 
