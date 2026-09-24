@@ -3,6 +3,7 @@ import type { RGB } from './color.ts';
 export const AVATARS = ['🦊', '🐙', '🦉', '🐸', '🐼', '🐧', '🦋', '🦝', '🐱', '🐻', '🦄', '🐝'] as const;
 
 export interface RoomSettings {
+  mode: 'classic' | 'duel';
   timerSeconds: number;
   grayPercent: number;
   strictness: number;

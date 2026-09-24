@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { oklabDistance, oklabToRgb, randomTarget, rgbToOklab, scoreGuess, type RGB } from '../shared/color.ts';
 import { GameStore } from '../server/game.ts';
+import { DUEL_COLORS, DUEL_ROUNDS } from '../server/duel-colors.ts';
 
 test('Oklab conversion stays close to sRGB and scores fall with distance', () => {
   const samples: RGB[] = [[0, 0, 0], [255, 255, 255], [255, 0, 0], [20, 180, 220], [167, 102, 204]];
@@ -93,6 +94,54 @@ test('an expired round scores the last selected color even without confirmation'
     assert.equal(result?.points, scoreGuess(room.target!, lastColor, 3));
     assert.equal(result?.autoSubmitted, true);
     assert.ok(room.results?.every((entry) => entry.color !== null && entry.points > 0));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('duel gives both players the same five curated clues and keeps spectators out of scoring', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'color-searth-duel-'));
+  try {
+    assert.ok(DUEL_COLORS.length >= 30);
+    assert.equal(new Set(DUEL_COLORS.map((entry) => entry.id)).size, DUEL_COLORS.length);
+    assert.ok(DUEL_COLORS.every((entry) => entry.clue.length > 12 && entry.clue.length <= 140 && entry.color.every((channel) => Number.isInteger(channel) && channel >= 0 && channel <= 255)));
+
+    const store = new GameStore(join(dir, 'rooms.json'));
+    const { room, player: host } = store.create('Аня', '🦊', 'socket-1');
+    const opponent = store.join(room.code, 'Борис', '🐙', 'socket-2').player;
+    assert.throws(() => store.start(room, host.id), /минимум три/);
+    store.updateSettings(room, host.id, { mode: 'duel', timerSeconds: 30, grayPercent: 10, strictness: 3 });
+    store.start(room, host.id);
+    assert.equal(room.phase, 'guess');
+    assert.equal(store.view(room, host.id).totalRounds, DUEL_ROUNDS);
+    const seen = new Set<string>();
+    for (let round = 0; round < DUEL_ROUNDS; round += 1) {
+      assert.equal(room.phase, 'guess');
+      const target = room.target!;
+      const clue = room.clue!;
+      assert.ok(DUEL_COLORS.some((entry) => entry.clue === clue && entry.color.every((channel, index) => channel === target[index])));
+      seen.add(clue);
+      assert.equal(store.view(room, host.id).target, null);
+      assert.equal(store.view(room, opponent.id).clue, clue);
+      assert.equal(store.view(room, host.id).describerId, null);
+      if (round === 0) {
+        const spectator = store.join(room.code, 'Катя', '🦉', 'socket-3').player;
+        assert.ok(!room.eligible.has(spectator.id));
+        assert.ok(!room.participants.has(spectator.id));
+        assert.throws(() => store.submitGuess(room, spectator.id, target), /недоступен/);
+      }
+      store.submitGuess(room, host.id, target);
+      store.submitGuess(room, opponent.id, [0, 0, 0]);
+      assert.equal(room.phase, 'reveal');
+      assert.equal(room.results?.length, 2);
+      assert.equal(room.describerPoints, null);
+      assert.equal(room.results?.find((entry) => entry.playerId === host.id)?.points, 5000);
+      store.next(room, host.id);
+    }
+    assert.equal(seen.size, DUEL_ROUNDS);
+    assert.equal(room.phase, 'finished');
+    assert.deepEqual(room.history[0].winners, ['Аня']);
+    assert.equal(room.history[0].leaderboard.length, 2);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

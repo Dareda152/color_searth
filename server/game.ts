@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname } from 'node:path';
 import { oklabDistance, randomTarget, scoreGuess, wheelToRgb, type RGB } from '../shared/color.ts';
 import { AVATARS, type FinishedGame, type GuessResult, type Phase, type RoomSettings, type RoomView } from '../shared/types.ts';
+import { DUEL_COLORS, DUEL_ROUNDS, type DuelColor } from './duel-colors.ts';
 
 interface Player {
   id: string;
@@ -22,6 +23,7 @@ interface Room {
   settings: RoomSettings;
   phase: Phase;
   roster: string[];
+  duelDeck: DuelColor[];
   participants: Set<string>;
   roundIndex: number;
   target: RGB | null;
@@ -44,7 +46,7 @@ interface SavedRoom {
   history: FinishedGame[];
 }
 
-const DEFAULT_SETTINGS: RoomSettings = { timerSeconds: 90, grayPercent: 10, strictness: 3 };
+const DEFAULT_SETTINGS: RoomSettings = { mode: 'classic', timerSeconds: 90, grayPercent: 10, strictness: 3 };
 const DEFAULT_GUESS = wheelToRgb(0.68, 0.25, 0.7);
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const BLOCKED_CODE = /(?:#[0-9a-f]{3,8}\b|0x[0-9a-f]{6,8}\b|\b(?:rgb|rgba|hsl|hsla|oklab|oklch)\s*\()/i;
@@ -62,7 +64,7 @@ export class GameStore {
 
   private emptyRoom(code: string, settings = DEFAULT_SETTINGS, history: FinishedGame[] = []): Room {
     return {
-      code, hostId: null, players: new Map(), settings, phase: 'lobby', roster: [], participants: new Set(),
+      code, hostId: null, players: new Map(), settings: { ...DEFAULT_SETTINGS, ...settings }, phase: 'lobby', roster: [], duelDeck: [], participants: new Set(),
       roundIndex: 0, target: null, clue: null, guesses: new Map(), drafts: new Map(), eligible: new Set(), deadline: null,
       timer: null, results: null, describerPoints: null, skipped: false, phaseStartedAt: Date.now(), history,
     };
@@ -98,8 +100,8 @@ export class GameStore {
     if (!room) throw new Error('Комната не найдена. Проверьте код.');
     const player = this.addPlayer(room, nickname, avatar, socketId);
     if (!room.hostId || !room.players.get(room.hostId)?.connected) room.hostId = player.id;
-    if (room.phase !== 'lobby') room.participants.add(player.id);
-    if (room.phase === 'guess') {
+    if (room.phase !== 'lobby' && room.settings.mode === 'classic') room.participants.add(player.id);
+    if (room.phase === 'guess' && room.settings.mode === 'classic') {
       room.eligible.add(player.id);
       room.drafts.set(player.id, DEFAULT_GUESS);
     }
@@ -154,12 +156,14 @@ export class GameStore {
     if (room.phase !== 'lobby') throw new Error('Настройки меняются перед началом партии.');
     if (!value || typeof value !== 'object') throw new Error('Неверные настройки.');
     const input = value as Partial<RoomSettings>;
-    if (!Number.isInteger(input.timerSeconds) || input.timerSeconds! < 30 || input.timerSeconds! > 180 ||
+    const mode = input.mode ?? room.settings.mode;
+    if ((mode !== 'classic' && mode !== 'duel') ||
+        !Number.isInteger(input.timerSeconds) || input.timerSeconds! < 30 || input.timerSeconds! > 180 ||
         !Number.isInteger(input.grayPercent) || input.grayPercent! < 0 || input.grayPercent! > 100 ||
         !Number.isInteger(input.strictness) || input.strictness! < 1 || input.strictness! > 5) {
       throw new Error('Проверьте значения настроек.');
     }
-    room.settings = { timerSeconds: input.timerSeconds!, grayPercent: input.grayPercent!, strictness: input.strictness! };
+    room.settings = { mode, timerSeconds: input.timerSeconds!, grayPercent: input.grayPercent!, strictness: input.strictness! };
     this.persist();
     this.emit(room);
   }
@@ -168,7 +172,8 @@ export class GameStore {
     this.requireHost(room, actorId);
     if (room.phase !== 'lobby') throw new Error('Партия уже идёт.');
     const active = [...room.players.values()].filter((player) => player.connected);
-    if (active.length < 3) throw new Error('Для начала нужны минимум три игрока.');
+    if (room.settings.mode === 'duel' && active.length !== 2) throw new Error('Для дуэли нужны ровно два игрока.');
+    if (room.settings.mode === 'classic' && active.length < 3) throw new Error('Для начала нужны минимум три игрока.');
     for (const player of room.players.values()) player.score = 0;
     room.roster = active.map((player) => player.id);
     for (let i = room.roster.length - 1; i > 0; i -= 1) {
@@ -176,6 +181,11 @@ export class GameStore {
       [room.roster[i], room.roster[j]] = [room.roster[j], room.roster[i]];
     }
     room.participants = new Set(room.roster);
+    room.duelDeck = room.settings.mode === 'duel' ? [...DUEL_COLORS] : [];
+    for (let i = room.duelDeck.length - 1; i > 0; i -= 1) {
+      const j = randomInt(i + 1);
+      [room.duelDeck[i], room.duelDeck[j]] = [room.duelDeck[j], room.duelDeck[i]];
+    }
     room.roundIndex = 0;
     this.beginRound(room);
   }
@@ -183,7 +193,7 @@ export class GameStore {
   private beginRound(room: Room): void {
     room.phase = 'clue';
     room.phaseStartedAt = Date.now();
-    room.target = randomTarget(room.settings.grayPercent);
+    room.target = room.settings.mode === 'duel' ? room.duelDeck[room.roundIndex].color : randomTarget(room.settings.grayPercent);
     room.clue = null;
     room.guesses = new Map();
     room.drafts = new Map();
@@ -192,18 +202,25 @@ export class GameStore {
     room.results = null;
     room.describerPoints = null;
     room.skipped = false;
-    this.emit(room);
+    if (room.settings.mode === 'duel') {
+      room.clue = room.duelDeck[room.roundIndex].clue;
+      this.beginGuessing(room, room.roster);
+    } else this.emit(room);
   }
 
   submitClue(room: Room, actorId: string, value: unknown): void {
-    if (room.phase !== 'clue' || room.roster[room.roundIndex] !== actorId) throw new Error('Сейчас не ваш ход описания.');
+    if (room.settings.mode !== 'classic' || room.phase !== 'clue' || room.roster[room.roundIndex] !== actorId) throw new Error('Сейчас не ваш ход описания.');
     const clue = String(value ?? '').trim().replace(/\s+/g, ' ');
     if (!clue || Array.from(clue).length > 140) throw new Error('Подсказка должна содержать от 1 до 140 символов.');
     if (BLOCKED_CODE.test(clue)) throw new Error('Цветовые коды в подсказке запрещены.');
     room.clue = clue;
+    this.beginGuessing(room, [...room.players.values()].filter((player) => player.connected && player.id !== actorId).map((player) => player.id));
+  }
+
+  private beginGuessing(room: Room, eligibleIds: string[]): void {
     room.phase = 'guess';
     room.phaseStartedAt = Date.now();
-    room.eligible = new Set([...room.players.values()].filter((player) => player.connected && player.id !== actorId).map((player) => player.id));
+    room.eligible = new Set(eligibleIds);
     for (const id of room.eligible) room.drafts.set(id, DEFAULT_GUESS);
     room.deadline = Date.now() + room.settings.timerSeconds * 1000;
     room.timer = setTimeout(() => this.reveal(room), room.settings.timerSeconds * 1000);
@@ -253,16 +270,18 @@ export class GameStore {
     }
     results.sort((a, b) => b.points - a.points);
     room.results = results;
-    const describer = room.players.get(room.roster[room.roundIndex]);
-    room.describerPoints = results.length ? Math.round(results.reduce((sum, result) => sum + result.points, 0) / results.length) : 0;
-    if (describer) describer.score += room.describerPoints;
+    if (room.settings.mode === 'classic') {
+      const describer = room.players.get(room.roster[room.roundIndex]);
+      room.describerPoints = results.length ? Math.round(results.reduce((sum, result) => sum + result.points, 0) / results.length) : 0;
+      if (describer) describer.score += room.describerPoints;
+    } else room.describerPoints = null;
     this.emit(room);
   }
 
   skipDisconnectedDescriber(room: Room, actorId: string): void {
     this.requireHost(room, actorId);
     const describer = room.players.get(room.roster[room.roundIndex]);
-    if (room.phase !== 'clue' || describer?.connected) throw new Error('Пропустить можно только ход отключившегося ведущего.');
+    if (room.settings.mode !== 'classic' || room.phase !== 'clue' || describer?.connected) throw new Error('Пропустить можно только ход отключившегося ведущего.');
     room.skipped = true;
     room.phase = 'reveal';
     room.phaseStartedAt = Date.now();
@@ -276,7 +295,7 @@ export class GameStore {
     this.requireHost(room, actorId);
     if (room.phase !== 'reveal') throw new Error('Раунд ещё не завершён.');
     room.roundIndex += 1;
-    if (room.roundIndex < room.roster.length) {
+    if (room.roundIndex < (room.settings.mode === 'duel' ? DUEL_ROUNDS : room.roster.length)) {
       this.beginRound(room);
       return;
     }
@@ -298,6 +317,7 @@ export class GameStore {
     room.phase = 'lobby';
     room.phaseStartedAt = Date.now();
     room.roster = [];
+    room.duelDeck = [];
     room.participants = new Set();
     room.roundIndex = 0;
     room.target = null;
@@ -310,7 +330,8 @@ export class GameStore {
   }
 
   view(room: Room, selfId: string): RoomView {
-    const describerId = room.roster[room.roundIndex] ?? null;
+    const describerId = room.settings.mode === 'duel' ? null : room.roster[room.roundIndex] ?? null;
+    const totalRounds = room.settings.mode === 'duel' ? DUEL_ROUNDS : room.roster.length;
     const revealed = room.phase === 'reveal' || room.phase === 'finished';
     return {
       code: room.code, selfId, phase: room.phase, settings: room.settings,
@@ -319,8 +340,8 @@ export class GameStore {
         score: player.score, isHost: room.hostId === player.id, isDescriber: describerId === player.id,
         hasGuessed: room.guesses.has(player.id), inCurrentGame: room.roster.includes(player.id),
       })),
-      roundNumber: room.phase === 'lobby' ? 0 : Math.min(room.roundIndex + 1, room.roster.length),
-      totalRounds: room.roster.length, describerId,
+      roundNumber: room.phase === 'lobby' ? 0 : Math.min(room.roundIndex + 1, totalRounds),
+      totalRounds: room.phase === 'lobby' ? 0 : totalRounds, describerId,
       target: revealed || (room.phase !== 'lobby' && describerId === selfId) ? room.target : null,
       clue: room.clue, deadline: room.deadline,
       phaseStartedAt: room.phaseStartedAt,

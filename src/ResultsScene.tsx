@@ -2,10 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { rgbCss, rgbToOklab, type Oklab, type RGB } from '../shared/color.ts';
 import type { GuessResult } from '../shared/types.ts';
 
-const INTRO_MS = 1700;
-const TARGET_MS = 3000;
-const GUESS_MS = 2100;
-const OUTRO_MS = 2900;
+const INTRO_MS = 450;
+const TARGET_MS = 1200;
+const GUESS_MS = 1700;
+const OUTRO_MS = 2100;
 const ease = (t: number) => 1 - Math.pow(1 - Math.min(1, Math.max(0, t)), 3);
 const mix = (a: number, b: number, t: number) => a + (b - a) * t;
 const point = ([L, a, b]: Oklab) => ({ x: a * 2.45, y: b * 2.45, z: (L - 0.5) * 1.7 });
@@ -76,17 +76,48 @@ export function ResultsScene({ target, results, startedAt, replayAt }: {
 
     const targetPoint = point(rgbToOklab(target));
     const guessPoint = current?.color ? point(rgbToOklab(current.color)) : targetPoint;
-    const transition = ease(step.progress / 0.38);
-    const viewTarget = step.kind === 'target' ? ease(step.progress / 0.65) : step.kind === 'intro' ? 0 : step.kind === 'overview' ? 1 - ease(step.progress / 0.65) : 1;
-    const attention = step.kind === 'guess' ? transition : 0;
-    const focus = {
-      x: mix(0, mix(targetPoint.x, (targetPoint.x + guessPoint.x) / 2, attention), viewTarget),
-      y: mix(0, mix(targetPoint.y, (targetPoint.y + guessPoint.y) / 2, attention), viewTarget),
-      z: mix(0, mix(targetPoint.z, (targetPoint.z + guessPoint.z) / 2, attention), viewTarget),
-    };
+    const transition = ease(step.progress / .48);
+    const midpoint = (a: ReturnType<typeof point>, b: ReturnType<typeof point>) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 });
+    const waypoints = ordered.map((result) => result.color ? midpoint(targetPoint, point(rgbToOklab(result.color))) : targetPoint);
+    const yaws = [-.68];
+    for (const result of ordered) {
+      if (!result.color) { yaws.push(yaws[yaws.length - 1] + .24); continue; }
+      const end = point(rgbToOklab(result.color));
+      const dx = end.x - targetPoint.x, dy = end.y - targetPoint.y;
+      if (Math.hypot(dx, dy) < .025) { yaws.push(yaws[yaws.length - 1] + .35); continue; }
+      // Facing perpendicular to each answer vector makes the Oklab gap legible.
+      const desired = -Math.atan2(dy, dx);
+      const previous = yaws[yaws.length - 1];
+      const aligned = desired + Math.round((previous - desired) / Math.PI) * Math.PI;
+      yaws.push(aligned);
+    }
+    const focus = { x: 0, y: 0, z: 0 };
+    let yaw = -.68;
+    let zoom = .86;
+    if (step.kind === 'intro') yaw += step.progress * .18;
+    if (step.kind === 'target') {
+      const t = ease(step.progress / .85);
+      Object.assign(focus, { x: targetPoint.x * t, y: targetPoint.y * t, z: targetPoint.z * t });
+      yaw += .18 + step.progress * .20;
+      zoom = mix(.86, 1.9, t);
+    }
+    if (step.kind === 'guess') {
+      const from = step.index ? waypoints[step.index - 1] : targetPoint;
+      const to = waypoints[step.index];
+      const t = ease(step.progress / .58);
+      Object.assign(focus, { x: mix(from.x, to.x, t), y: mix(from.y, to.y, t), z: mix(from.z, to.z, t) });
+      const fromYaw = step.index ? yaws[step.index] : -.30;
+      yaw = mix(fromYaw, yaws[step.index + 1], t) + Math.sin(step.progress * Math.PI) * .09;
+      zoom = mix(step.index ? 1.75 : 1.9, 1.75, t);
+    }
+    if (step.kind === 'overview') {
+      const from = waypoints.at(-1) ?? targetPoint;
+      const t = ease(step.progress / .72);
+      Object.assign(focus, { x: from.x * (1 - t), y: from.y * (1 - t), z: from.z * (1 - t) });
+      yaw = mix(yaws.at(-1) ?? -.30, (yaws.at(-1) ?? -.30) + .48, t);
+      zoom = mix(1.75, .87, t);
+    }
     const base = Math.min(width / 2.35, height / 2.25);
-    const zoom = mix(0.88, current ? 1.9 : 2.15, viewTarget);
-    const yaw = -0.48 + Math.min(elapsed / 26000, 1) * 0.28;
     const elevation = 0.22;
     const project = (v: ReturnType<typeof point>) => {
       const px = v.x - focus.x, py = v.y - focus.y, pz = v.z - focus.z;
